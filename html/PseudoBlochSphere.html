@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>Bloch Sphere Visualizer with Adjustable Rotation Rate</title>
+  <style>
+    body { margin: 0; display: flex; flex-direction: row; }
+    canvas { width: 50vw; height: 100vh; display: block; }
+    #info {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: rgba(255, 255, 255, 0.8);
+      padding: 8px;
+      font-family: sans-serif;
+      font-size: 14px;
+      border-radius: 4px;
+      z-index: 1;
+    }
+    .controls {
+      position: absolute;
+      top: 10px;
+      left: 250px;
+      background: rgba(255, 255, 255, 0.8);
+      padding: 10px;
+      font-family: sans-serif;
+      font-size: 14px;
+      border-radius: 4px;
+      display: flex;
+      flex-direction: column;
+      z-index: 1;
+      cursor: move;
+    }
+    .controls label {
+      margin: 5px 0;
+    }
+    .rotation-buttons {
+      display: flex;
+      flex-direction: row;
+      justify-content: space-around;
+      margin-top: 10px;
+    }
+    .rotation-buttons button {
+      padding: 5px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div id="info">x: 0, y: 1, z: 0</div>
+  <canvas id="blochCanvas"></canvas>
+  <canvas id="copyCanvas"></canvas>
+
+  <div class="controls" id="controls">
+    <label>
+      θ (theta): <input type="range" id="thetaSlider" min="0" max="6.28319" step="0.01" value="1.5708">
+      <input type="checkbox" id="autoTheta" checked> 自動回転
+    </label>
+    <label>
+      φ (phi): <input type="range" id="phiSlider" min="0" max="6.28319" step="0.01" value="0">
+      <input type="checkbox" id="autoPhi" checked> 自動回転
+    </label>
+    <label>
+      θ変化率: <input type="number" id="thetaRateInput" min="0" max="0.1" step="0.001" value="0.01" style="width: 80px;">
+    </label>
+    <label>
+      φ変化率: <input type="number" id="phiRateInput" min="0" max="0.1" step="0.001" value="0.01" style="width: 80px;">
+    </label>
+    <label>
+      移動可能: <input type="checkbox" id="moveCheckbox" checked>
+    </label>
+    <hr>
+    <label>
+      θとφを90°切り替え: <input type="checkbox" id="thetaPhiSwitch">
+    </label>
+    <label>
+      赤と黄の色を切り替え: <input type="checkbox" id="colorSwitch">
+    </label>
+    <hr>
+    <div class="rotation-buttons">
+      <button id="rotateX">X軸 +90°</button>
+      <button id="rotateY">Y軸 +90°</button>
+      <button id="rotateZ">Z軸 +90°</button>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/three@0.157.0/build/three.min.js"></script>
+
+  <script>
+    const WIDTH = window.innerWidth / 2;
+    const HEIGHT = window.innerHeight;
+    const POINT_HISTORY = 500;
+
+    function initScene(canvas) {
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(60, WIDTH / HEIGHT, 0.1, 1000);
+      const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+      renderer.setSize(WIDTH, HEIGHT);
+      camera.position.z = 3;
+      return { scene, camera, renderer };
+    }
+
+    const blochCanvas = document.getElementById('blochCanvas');
+    const { scene: scene1, camera: cam1, renderer: ren1 } = initScene(blochCanvas);
+
+    const copyCanvas = document.getElementById('copyCanvas');
+    const { scene: scene2, camera: cam2, renderer: ren2 } = initScene(copyCanvas);
+
+    // 左側の球体（ブロッホ球）は青色に
+    const sphere1 = new THREE.Mesh(
+      new THREE.SphereGeometry(1, 32, 32),
+      new THREE.MeshBasicMaterial({ color: 0x00aaff, wireframe: true, opacity: 0.4, transparent: true })
+    );
+    scene1.add(sphere1);
+    scene1.add(new THREE.AxesHelper(1.5));
+
+    // 右側の球体は緑色に
+    const sphere2 = new THREE.Mesh(
+      new THREE.SphereGeometry(1, 32, 32),
+      new THREE.MeshBasicMaterial({ color: 0x00ff00, wireframe: true, opacity: 0.4, transparent: true })
+    );
+    scene2.add(sphere2);
+    scene2.add(new THREE.AxesHelper(1.5));
+
+    const arrow = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 0), 1, 0xff0000, 0.1, 0.05);
+    scene1.add(arrow);
+
+    // 軌跡を点で表示
+    const trailGeometry = new THREE.BufferGeometry();
+    const trailPoints = new Float32Array(POINT_HISTORY * 3);
+    trailGeometry.setAttribute('position', new THREE.BufferAttribute(trailPoints, 3));
+    const trailMaterial = new THREE.PointsMaterial({ color: 0xff0000, size: 0.01 });
+    const trail = new THREE.Points(trailGeometry, trailMaterial);
+    scene1.add(trail);
+
+    let trailIndex = 0;
+
+    // 地球儀風の球体を作成（シンプルな緯線・経線模様）
+    function createSimplifiedEarthGlobe() {
+      const globeGeometry = new THREE.SphereGeometry(1, 32, 32);
+      const globeMaterial = new THREE.MeshBasicMaterial({ color: 0xaaaaaa, wireframe: true, opacity: 0.2, transparent: true });
+      const globe = new THREE.Mesh(globeGeometry, globeMaterial);
+        
+      // 緯線と経線の描画
+      const lineMaterial = new THREE.LineBasicMaterial({ color: 0x00ff00 });
+        
+      // 緯線・経線を描画
+      for (let i = -90; i < 90; i += 10) {
+        const latitude = i * Math.PI / 180;
+        const circleGeometry = new THREE.CircleGeometry(1, 32);
+        const circle = new THREE.LineLoop(circleGeometry, lineMaterial);
+        circle.rotation.x = latitude;
+        globe.add(circle);
+      }
+
+      // 経線を描画
+      for (let i = 0; i < 360; i += 10) {
+        const longitude = i * Math.PI / 180;
+        const lineGeometry = new THREE.BufferGeometry();
+        const lineMaterial = new THREE.LineBasicMaterial({ color: 0x00ff00 });
+        const points = [];
+        
+        for (let j = -90; j <= 90; j += 10) {
+          const lat = j * Math.PI / 180;
+          const x = Math.cos(lat) * Math.cos(longitude);
+          const y = Math.sin(lat);
+          const z = Math.cos(lat) * Math.sin(longitude);
+          points.push(new THREE.Vector3(x, y, z));
+        }
+
+        lineGeometry.setFromPoints(points);
+        const line = new THREE.Line(lineGeometry, lineMaterial);
+        globe.add(line);
+      }
+
+      // 北極、南極、X軸上の球体
+      const northPole = new THREE.Mesh(
+        new THREE.SphereGeometry(0.1, 16, 16),
+        new THREE.MeshBasicMaterial({ color: 0xff0000 })
+      );
+      northPole.position.set(0, 1, 0);
+      globe.add(northPole);
+
+      const southPole = new THREE.Mesh(
+        new THREE.SphereGeometry(0.1, 16, 16),
+        new THREE.MeshBasicMaterial({ color: 0x000000 })
+      );
+      southPole.position.set(0, -1, 0);
+      globe.add(southPole);
+
+      const xAxisPositive = new THREE.Mesh(
+        new THREE.SphereGeometry(0.1, 16, 16),
+        new THREE.MeshBasicMaterial({ color: 0xffff00 })
+      );
+      xAxisPositive.position.set(1, 0, 0);
+      globe.add(xAxisPositive);
+
+      const xAxisNegative = new THREE.Mesh(
+        new THREE.SphereGeometry(0.1, 16, 16),
+        new THREE.MeshBasicMaterial({ color: 0x000000 })
+      );
+      xAxisNegative.position.set(-1, 0, 0);
+      globe.add(xAxisNegative);
+        
+      return { globe, northPole, southPole, xAxisPositive, xAxisNegative };
+    }
+
+    const { globe: earthGlobe, northPole, southPole, xAxisPositive, xAxisNegative } = createSimplifiedEarthGlobe();
+    scene2.add(earthGlobe);
+
+    // パラメータ制御
+    const params = {
+      theta: 1.5708,
+      phi: 0,
+      dThetaRate: 0.01,
+      dPhiRate: 0.01
+    };
+
+    const infoBox = document.getElementById('info');
+
+    let autoTheta = true;
+    let autoPhi = true;
+    let thetaPhiSwitched = false;
+    let colorSwitched = false;
+
+    const thetaSlider = document.getElementById('thetaSlider');
+    const phiSlider = document.getElementById('phiSlider');
+    const autoThetaCheckbox = document.getElementById('autoTheta');
+    const autoPhiCheckbox = document.getElementById('autoPhi');
+    const thetaPhiSwitch = document.getElementById('thetaPhiSwitch');
+    const colorSwitch = document.getElementById('colorSwitch');
+
+    const thetaRateInput = document.getElementById('thetaRateInput');
+    const phiRateInput = document.getElementById('phiRateInput');
+
+    thetaSlider.addEventListener('input', () => params.theta = parseFloat(thetaSlider.value));
+    phiSlider.addEventListener('input', () => params.phi = parseFloat(phiSlider.value));
+    
+    autoThetaCheckbox.addEventListener('change', () => autoTheta = autoThetaCheckbox.checked);
+    autoPhiCheckbox.addEventListener('change', () => autoPhi = autoPhiCheckbox.checked);
+    thetaPhiSwitch.addEventListener('change', () => thetaPhiSwitched = thetaPhiSwitch.checked);
+    colorSwitch.addEventListener('change', () => colorSwitched = colorSwitch.checked);
+
+    thetaRateInput.addEventListener('input', () => params.dThetaRate = parseFloat(thetaRateInput.value));
+    phiRateInput.addEventListener('input', () => params.dPhiRate = parseFloat(phiRateInput.value));
+
+    // 座標表示がスライダー設定ウィンドウと重ならないように配置
+    const controls = document.getElementById('controls');
+    controls.addEventListener('mousedown', (e) => {
+      if (document.getElementById('moveCheckbox').checked) {
+        const offsetX = e.clientX - controls.offsetLeft;
+        const offsetY = e.clientY - controls.offsetTop;
+        
+        const mouseMoveHandler = (moveEvent) => {
+          controls.style.left = `${moveEvent.clientX - offsetX}px`;
+          controls.style.top = `${moveEvent.clientY - offsetY}px`;
+        };
+        
+        const mouseUpHandler = () => {
+          document.removeEventListener('mousemove', mouseMoveHandler);
+          document.removeEventListener('mouseup', mouseUpHandler);
+        };
+
+        document.addEventListener('mousemove', mouseMoveHandler);
+        document.addEventListener('mouseup', mouseUpHandler);
+      }
+    });
+
+    // 回転ボタンのイベントリスナー
+    document.getElementById('rotateX').addEventListener('click', () => {
+      scene1.rotation.x += Math.PI / 2;
+      scene2.rotation.x += Math.PI / 2;
+    });
+
+    document.getElementById('rotateY').addEventListener('click', () => {
+      scene1.rotation.y += Math.PI / 2;
+      scene2.rotation.y += Math.PI / 2;
+    });
+
+    document.getElementById('rotateZ').addEventListener('click', () => {
+      scene1.rotation.z += Math.PI / 2;
+      scene2.rotation.z += Math.PI / 2;
+    });
+
+    function update() {
+      if (autoTheta) {
+        params.theta += params.dThetaRate;
+        if (params.theta > 2 * Math.PI) params.theta = 0;
+      }
+      if (autoPhi) {
+        params.phi += params.dPhiRate;
+        if (params.phi > 2 * Math.PI) params.phi = 0;
+      }
+
+      // スライダーでの値反映
+      thetaSlider.value = params.theta;
+      phiSlider.value = params.phi;
+
+      let currentTheta, currentPhi;
+      if (thetaPhiSwitched) {
+        currentTheta = params.phi;
+        currentPhi = params.theta;
+      } else {
+        currentTheta = params.theta;
+        currentPhi = params.phi;
+      }
+
+      const x = Math.sin(currentTheta) * Math.cos(currentPhi);
+      const y = Math.cos(currentTheta);
+      const z = Math.sin(currentTheta) * Math.sin(currentPhi);
+      const dir = new THREE.Vector3(x, y, z).normalize();
+      arrow.setDirection(dir);
+
+      // 座標更新表示
+      infoBox.textContent = `x: ${x.toFixed(3)}, y: ${y.toFixed(3)}, z: ${z.toFixed(3)}`;
+
+      // 軌跡更新
+      const positions = trail.geometry.attributes.position.array;
+      positions[trailIndex * 3] = x;
+      positions[trailIndex * 3 + 1] = y;
+      positions[trailIndex * 3 + 2] = z;
+      trailIndex = (trailIndex + 1) % POINT_HISTORY;
+      trail.geometry.attributes.position.needsUpdate = true;
+
+      // 両球体の回転（ベクトルに追随）
+      sphere2.rotation.x = currentTheta;
+      sphere2.rotation.y = currentPhi;
+      earthGlobe.rotation.x = currentTheta;
+      earthGlobe.rotation.y = currentPhi;
+
+      // 色の切り替え
+      if (colorSwitched) {
+        northPole.material.color.setHex(0xffff00);
+        xAxisPositive.material.color.setHex(0xff0000);
+      } else {
+        northPole.material.color.setHex(0xff0000);
+        xAxisPositive.material.color.setHex(0xffff00);
+      }
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      update();
+      ren1.render(scene1, cam1);
+      ren2.render(scene2, cam2);
+    }
+
+    animate();
+  </script>
+</body>
+</html>
